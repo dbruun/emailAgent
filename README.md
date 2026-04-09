@@ -155,6 +155,12 @@ src/EmailAgent/
 └── appsettings.json                  # Configuration template
 ```
 
+## Further Reading
+
+| Document | Description |
+|---|---|
+| [Graph RAG with Cosmos DB Gremlin](docs/graph-rag-cosmos-gremlin.md) | Full architecture, data model, implementation guide, and infrastructure setup for adding GraphRAG via Azure Cosmos DB for Apache Gremlin |
+
 ## Key packages
 
 | Package | Purpose |
