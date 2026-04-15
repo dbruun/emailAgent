@@ -1,4 +1,5 @@
 using EmailAgent.Configuration;
+using EmailAgent.Models;
 using EmailAgent.Services;
 using Microsoft.Extensions.Options;
 
@@ -105,7 +106,7 @@ public sealed class EmailMonitorWorker : BackgroundService
 
         try
         {
-            Models.GraphContext? graphContext = null;
+            GraphContext? graphContext = null;
 
             if (_graphRagSettings.Enabled)
             {

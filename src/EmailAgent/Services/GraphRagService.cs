@@ -26,6 +26,7 @@ public sealed class GraphRagService : IGraphRagService, IAsyncDisposable
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private GremlinClient? _gremlinClient;
+    private const int MaxSnippetLength = 500;
 
     private const string ExtractionSystemPrompt =
         """
@@ -64,7 +65,7 @@ public sealed class GraphRagService : IGraphRagService, IAsyncDisposable
         string emailSnippet =
             $"From: {email.SenderName} <{email.SenderAddress}>\n" +
             $"Subject: {email.Subject}\n" +
-            $"Body (first 500 chars): {email.BodyText[..Math.Min(500, email.BodyText.Length)]}";
+            $"Body (first {MaxSnippetLength} chars): {email.BodyText[..Math.Min(MaxSnippetLength, email.BodyText.Length)]}";
 
         var projectClient = new AIProjectClient(
             new Uri(_foundrySettings.ProjectEndpoint),
@@ -103,9 +104,13 @@ public sealed class GraphRagService : IGraphRagService, IAsyncDisposable
                     .ToArray()
                 : Array.Empty<string>();
 
-            string senderDomain = root.TryGetProperty("senderDomain", out var senderDomainEl)
-                ? senderDomainEl.GetString() ?? GetDomain(email.SenderAddress)
-                : GetDomain(email.SenderAddress);
+            string senderDomain = GetDomain(email.SenderAddress);
+            if (root.TryGetProperty("senderDomain", out var senderDomainEl))
+            {
+                string? parsedSenderDomain = senderDomainEl.GetString();
+                if (!string.IsNullOrWhiteSpace(parsedSenderDomain))
+                    senderDomain = parsedSenderDomain;
+            }
 
             string issueSummary = root.TryGetProperty("issueSummary", out var issueSummaryEl)
                 ? issueSummaryEl.GetString() ?? email.Subject
@@ -324,9 +329,9 @@ public sealed class GraphRagService : IGraphRagService, IAsyncDisposable
             return;
 
         GremlinClient client = await GetClientAsync(cancellationToken).ConfigureAwait(false);
-        string snippet = replyBody[..Math.Min(500, replyBody.Length)];
+        string snippet = replyBody[..Math.Min(MaxSnippetLength, replyBody.Length)];
         string resolutionId = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(snippet)));
+            SHA256.HashData(Encoding.UTF8.GetBytes($"{messageId}:{snippet}")));
         string summary = snippet.Length > 100 ? snippet[..100] + "…" : snippet;
         string nowUtc = DateTimeOffset.UtcNow.ToString("O");
 
@@ -435,7 +440,12 @@ public sealed class GraphRagService : IGraphRagService, IAsyncDisposable
             return null;
 
         if (value is IList<object> list)
-            return list.Count > 0 ? list[0]?.ToString() : null;
+        {
+            if (list.Count == 0)
+                return null;
+
+            return list[0]?.ToString();
+        }
 
         return value.ToString();
     }
