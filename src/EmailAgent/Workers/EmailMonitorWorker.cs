@@ -13,18 +13,24 @@ public sealed class EmailMonitorWorker : BackgroundService
 {
     private readonly IGraphEmailService _graphEmailService;
     private readonly IAIAgentService _aiAgentService;
+    private readonly IGraphRagService _graphRagService;
     private readonly EmailProcessingSettings _settings;
+    private readonly GraphRagSettings _graphRagSettings;
     private readonly ILogger<EmailMonitorWorker> _logger;
 
     public EmailMonitorWorker(
         IGraphEmailService graphEmailService,
         IAIAgentService aiAgentService,
+        IGraphRagService graphRagService,
         IOptions<EmailProcessingSettings> settings,
+        IOptions<GraphRagSettings> graphRagSettings,
         ILogger<EmailMonitorWorker> logger)
     {
         _graphEmailService = graphEmailService;
         _aiAgentService = aiAgentService;
+        _graphRagService = graphRagService;
         _settings = settings.Value;
+        _graphRagSettings = graphRagSettings.Value;
         _logger = logger;
     }
 
@@ -99,12 +105,39 @@ public sealed class EmailMonitorWorker : BackgroundService
 
         try
         {
-            // 1. Generate a reply with the AI agent (queries SharePoint + Blob knowledge).
+            Models.GraphContext? graphContext = null;
+
+            if (_graphRagSettings.Enabled)
+            {
+                try
+                {
+                    var entities = await _graphRagService
+                        .ExtractEntitiesAsync(email, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    await _graphRagService
+                        .UpsertGraphAsync(email, entities, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    graphContext = await _graphRagService
+                        .GetGraphContextAsync(email.SenderAddress, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex,
+                        "GraphRAG preprocessing failed for email {MessageId}. Continuing with standard prompt.",
+                        email.Id);
+                }
+            }
+
+            // 1. Generate a reply with the AI agent.
             string replyBody = await _aiAgentService.ProcessEmailAsync(
                 email.Subject,
                 email.BodyText,
                 email.SenderName,
                 email.SenderAddress,
+                graphContext,
                 cancellationToken)
                 .ConfigureAwait(false);
 
@@ -119,6 +152,22 @@ public sealed class EmailMonitorWorker : BackgroundService
             // 2. Send the reply through Microsoft Graph.
             await _graphEmailService.SendReplyAsync(email.Id, replyBody, cancellationToken)
                 .ConfigureAwait(false);
+
+            if (_graphRagSettings.Enabled)
+            {
+                try
+                {
+                    await _graphRagService
+                        .RecordResolutionAsync(email.Id, replyBody, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex,
+                        "GraphRAG resolution tracking failed for email {MessageId}.",
+                        email.Id);
+                }
+            }
 
             // 3. Move the message into the processed folder.
             await _graphEmailService.MoveToFolderAsync(

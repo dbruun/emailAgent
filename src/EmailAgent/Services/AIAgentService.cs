@@ -6,6 +6,7 @@ using Azure.AI.Projects;
 using Azure.AI.Projects.Agents;
 using Azure.Identity;
 using EmailAgent.Configuration;
+using EmailAgent.Models;
 using Microsoft.Extensions.Options;
 using OpenAI.Responses;
 
@@ -63,13 +64,17 @@ public sealed class AIAgentService : IAIAgentService
         string bodyText,
         string senderName,
         string senderAddress,
+        GraphContext? graphContext = null,
         CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
+        string graphContextBlock = BuildGraphContextBlock(graphContext);
+
         // Format the email as a single user prompt so the agent has full context.
         string prompt =
             $"""
+            {graphContextBlock}
             From: {senderName} <{senderAddress}>
             Subject: {subject}
 
@@ -91,6 +96,45 @@ public sealed class AIAgentService : IAIAgentService
             reply.Length, senderAddress);
 
         return reply;
+    }
+
+    private static string BuildGraphContextBlock(GraphContext? ctx)
+    {
+        if (ctx is null)
+            return string.Empty;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== CUSTOMER RELATIONSHIP CONTEXT ===");
+
+        if (!string.IsNullOrWhiteSpace(ctx.OrganizationName))
+        {
+            sb.AppendLine(
+                $"Organization : {ctx.OrganizationName}" +
+                (!string.IsNullOrWhiteSpace(ctx.SupportTier) ? $" ({ctx.SupportTier} tier)" : ""));
+        }
+
+        if (ctx.PriorEmailCount > 0)
+            sb.AppendLine($"Account history: {ctx.PriorEmailCount} previous email(s) processed");
+
+        if (ctx.PriorIssues.Count > 0)
+        {
+            sb.AppendLine("Prior issues (newest first):");
+            int i = 1;
+            foreach (var issue in ctx.PriorIssues)
+            {
+                sb.AppendLine(
+                    $"  [{i++}] \"{issue.Subject}\" ({issue.CreatedAt:yyyy-MM-dd}) – {issue.Status.ToUpperInvariant()}");
+                if (!string.IsNullOrWhiteSpace(issue.ResolutionSummary))
+                    sb.AppendLine($"       Resolution: {issue.ResolutionSummary}");
+            }
+        }
+
+        if (ctx.KnownTopics.Count > 0)
+            sb.AppendLine($"Known topics for this sender: {string.Join(", ", ctx.KnownTopics)}");
+
+        sb.AppendLine("======================================");
+        sb.AppendLine();
+        return sb.ToString();
     }
 
     // -----------------------------------------------------------------------

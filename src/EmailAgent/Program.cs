@@ -11,6 +11,9 @@ builder.Services.Configure<GraphSettings>(
 builder.Services.Configure<AIFoundrySettings>(
     builder.Configuration.GetSection("AIFoundry"));
 
+builder.Services.Configure<GraphRagSettings>(
+    builder.Configuration.GetSection("GraphRag"));
+
 builder.Services.Configure<EmailProcessingSettings>(
     builder.Configuration.GetSection("EmailProcessing"));
 
@@ -23,6 +26,7 @@ builder.Services.AddSingleton<IGraphEmailService, GraphEmailService>();
 // client and ResponsesClient once and reuses them for the lifetime of the
 // application.
 builder.Services.AddSingleton<IAIAgentService, AIAgentService>();
+builder.Services.AddSingleton<IGraphRagService, GraphRagService>();
 
 // ── Background worker ─────────────────────────────────────────────────────
 builder.Services.AddHostedService<EmailMonitorWorker>();
