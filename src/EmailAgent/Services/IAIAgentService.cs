@@ -1,3 +1,5 @@
+using EmailAgent.Models;
+
 namespace EmailAgent.Services;
 
 /// <summary>
@@ -20,5 +22,6 @@ public interface IAIAgentService
         string bodyText,
         string senderName,
         string senderAddress,
+        GraphContext? graphContext = null,
         CancellationToken cancellationToken = default);
 }

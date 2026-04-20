@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Azure.AI.Projects" Version="2.0.0" />
     <PackageReference Include="Azure.Identity" Version="1.20.0" />
+    <PackageReference Include="Gremlin.Net" Version="3.7.3" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
     <PackageReference Include="Microsoft.Graph" Version="5.103.0" />
   </ItemGroup>

@@ -97,6 +97,22 @@ The application uses **app-only** auth (`ClientSecretCredential`). Grant the app
 }
 ```
 
+### GraphRAG (`GraphRag`)
+
+```json
+"GraphRag": {
+  "GremlinEndpoint": "wss://<account>.gremlin.cosmos.azure.com:443/",
+  "DatabaseName": "emailAgentDb",
+  "GraphName": "knowledgeGraph",
+  "AccountKey": "",
+  "PartitionKey": "email-agent",
+  "MaxRelatedIssues": 3,
+  "Enabled": true
+}
+```
+
+Set `GraphRag:AccountKey` via user secrets or environment variables.
+
 ## Running locally
 
 ```bash
@@ -167,5 +183,6 @@ src/EmailAgent/
 |---|---|
 | `Azure.AI.Projects` v2 | Azure AI Foundry SDK – `AIProjectClient`, `AgentAdministrationClient`, `ProjectResponsesClient` |
 | `Azure.Identity` | `DefaultAzureCredential` / `ClientSecretCredential` |
+| `Gremlin.Net` | Apache TinkerPop .NET driver used for Cosmos DB Gremlin GraphRAG operations |
 | `Microsoft.Graph` v5 | Microsoft Graph SDK for Outlook / Exchange operations |
 | `Microsoft.Extensions.Hosting` | Worker Service host and `BackgroundService` base class |
