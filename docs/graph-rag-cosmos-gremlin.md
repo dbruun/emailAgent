@@ -1,6 +1,6 @@
 # Graph RAG with Azure Cosmos DB for Apache Gremlin
 
-This document describes how to extend the **emailAgent** with **Graph Retrieval-Augmented Generation (GraphRAG)** using **Azure Cosmos DB for Apache Gremlin** as the graph store.  It covers the complete architecture, every component's purpose and rationale, the graph data model, a step-by-step implementation guide, and all configuration / infrastructure requirements.
+This document describes the **optional, advanced GraphRAG** capability of the **emailAgent**, which uses **Azure Cosmos DB for Apache Gremlin** as a knowledge graph store.  GraphRAG is **disabled by default** in the sample (`GraphRag:Enabled = false`).  When enabled, it augments AI-generated replies with structured customer relationship context.  This guide covers the architecture, data model, implementation details, and infrastructure requirements for enabling it.
 
 ---
 
@@ -9,8 +9,8 @@ This document describes how to extend the **emailAgent** with **Graph Retrieval-
 1. [Why GraphRAG for an Email Agent?](#1-why-graphrag-for-an-email-agent)
 2. [Conceptual Overview – RAG vs GraphRAG](#2-conceptual-overview--rag-vs-graphrag)
 3. [High-Level Architecture](#3-high-level-architecture)
-   - 3.1 [Existing Architecture (Baseline)](#31-existing-architecture-baseline)
-   - 3.2 [Target Architecture with GraphRAG](#32-target-architecture-with-graphrag)
+   - 3.1 [Default Architecture](#31-default-architecture)
+   - 3.2 [Architecture with GraphRAG Enabled](#32-architecture-with-graphrag-enabled)
 4. [Graph Data Model](#4-graph-data-model)
    - 4.1 [Vertex Types](#41-vertex-types)
    - 4.2 [Edge Types](#42-edge-types)
@@ -68,33 +68,31 @@ By storing **entities and their relationships** in a graph and traversing that g
 
 ## 2. Conceptual Overview – RAG vs GraphRAG
 
+```mermaid
+flowchart LR
+    subgraph Standard RAG - current
+        E1["Email text"] --> VE["Vector embed"] --> TK["Top-K chunks"] --> LLM1["LLM"] --> R1["Reply"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  STANDARD RAG (current)                                                     │
-│                                                                             │
-│   Email text ──► Vector embed ──► Top-K nearest chunks ──► LLM ──► Reply  │
-│                                                                             │
-│   Context window:  [chunk 1]  [chunk 2]  [chunk 3]                         │
-│   (independent, no relationship between chunks)                             │
-└─────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  GRAPH RAG (target)                                                         │
-│                                                                             │
-│   Email text                                                                │
-│       │                                                                     │
-│       ├──► Entity extraction ──► Graph traversal ──► Relationship context  │
-│       │         (AI)           (Cosmos Gremlin)         (structured)       │
-│       │                                                                     │
-│       └──► Vector embed ──────► Top-K chunks ──────► Document context     │
-│                                (AI Search)             (unstructured)      │
-│                                                                             │
-│   Combined context ──► LLM ──► Reply                                       │
-│                                                                             │
-│   Context window:  [sender history]  [related issues]  [past resolutions] │
-│                    [product links]   [org priority]    [relevant chunks]   │
-└─────────────────────────────────────────────────────────────────────────────┘
+> Context window contains independent chunks with no relationship between them.
+
+```mermaid
+flowchart LR
+    subgraph Graph RAG - when enabled
+        E2["Email text"] --> EX["Entity extraction\n(AI)"]
+        EX --> GT["Graph traversal\n(Cosmos Gremlin)"]
+        GT --> RC["Relationship context\n(structured)"]
+        E2 --> VE2["Vector embed"]
+        VE2 --> TK2["Top-K chunks\n(AI Search)"]
+        TK2 --> DC["Document context\n(unstructured)"]
+        RC --> LLM2["LLM"]
+        DC --> LLM2
+        LLM2 --> R2["Reply"]
+    end
 ```
+
+> Context window: sender history, related issues, past resolutions, org priority, plus relevant document chunks.
 
 GraphRAG **does not replace** the existing Azure AI Search / SharePoint retrieval – it **augments** it with structured relational context.
 
@@ -102,115 +100,50 @@ GraphRAG **does not replace** the existing Azure AI Search / SharePoint retrieva
 
 ## 3. High-Level Architecture
 
-### 3.1 Existing Architecture (Baseline)
+### 3.1 Default Architecture
 
-```
-┌───────────────────────────┐        poll every N seconds
-│  EmailMonitorWorker       │◄────── (BackgroundService)
-│  (Workers/)               │
-└───────┬───────────────────┘
-        │  unread emails
-        ▼
-┌───────────────────────────┐        Microsoft Graph API v1
-│  GraphEmailService        │◄────── app-only auth (ClientSecretCredential)
-│  (Services/)              │        • GetUnreadEmailsAsync
-│                           │        • SendReplyAsync
-│                           │        • MoveToFolderAsync
-└───────────────────────────┘
-        │  email content
-        ▼
-┌───────────────────────────┐        Azure AI Foundry (AIProjectClient)
-│  AIAgentService           │◄────── • Registers DeclarativeAgentDefinition
-│  (Services/)              │          with AzureAISearchTool +
-│                           │          SharepointPreviewTool
-│                           │        • Executes via ProjectResponsesClient
-└───────────────────────────┘
-        │  knowledge retrieval
-        ▼
-┌───────────────────────────┐
-│  Azure AI Search          │  indexes documents from:
-│                           │  • Azure Blob Storage
-│                           │  • SharePoint (via indexer)
-└───────────────────────────┘
+```mermaid
+flowchart TD
+    Worker["EmailMonitorWorker\n(BackgroundService)"]
+    GraphEmail["GraphEmailService\n(Microsoft Graph API v1)"]
+    AIAgent["AIAgentService\n(Azure AI Foundry)"]
+    AISearch["Azure AI Search\n(Blob + SharePoint)"]
+
+    Worker -- "poll every N seconds" --> GraphEmail
+    GraphEmail -- "unread emails" --> Worker
+    Worker -- "email content" --> AIAgent
+    AIAgent -- "knowledge retrieval" --> AISearch
+    AIAgent -- "reply text" --> Worker
+    Worker -- "send reply" --> GraphEmail
+    Worker -- "move to folder" --> GraphEmail
 ```
 
-### 3.2 Target Architecture with GraphRAG
+### 3.2 Architecture with GraphRAG Enabled
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  EmailMonitorWorker  (Workers/)                                          │
-│  BackgroundService – orchestrates the full poll loop                     │
-└────────┬──────────────────────────────────────────────────────┬─────────┘
-         │ 1. fetch unread emails                               │ 8. move to folder
-         ▼                                                      │
-┌──────────────────────┐      Microsoft Graph API v1            │
-│  GraphEmailService   │◄──── app-only auth                     │
-│  (Services/)         │      GetUnreadEmailsAsync              │
-│                      │      SendReplyAsync ◄── 7. send reply  │
-│                      │      MoveToFolderAsync ◄───────────────┘
-└────────┬─────────────┘
-         │ 2. EmailItem
-         ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  GraphRagService  (Services/)                     NEW                    │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  3a. ExtractEntitiesAsync                                        │   │
-│  │      Calls AIProjectClient (same model deployment) with a        │   │
-│  │      structured extraction prompt to pull Sender, Topics,        │   │
-│  │      Organizations, IssueTypes, Products from the email.         │   │
-│  └──────────────────────┬───────────────────────────────────────────┘   │
-│                         │ entities                                       │
-│  ┌──────────────────────▼───────────────────────────────────────────┐   │
-│  │  3b. UpsertGraphAsync                                            │   │
-│  │      Merges extracted entities & relationships into              │   │
-│  │      Cosmos DB Gremlin as vertices + edges.                      │   │
-│  └──────────────────────┬───────────────────────────────────────────┘   │
-│                         │ graph updated                                  │
-│  ┌──────────────────────▼───────────────────────────────────────────┐   │
-│  │  3c. GetGraphContextAsync                                        │   │
-│  │      Traverses the graph from the Sender vertex to collect:      │   │
-│  │      • prior issues submitted by this sender                     │   │
-│  │      • resolutions applied to those issues                       │   │
-│  │      • organization / tier info                                  │   │
-│  │      • related topics and linked knowledge articles              │   │
-│  │      Returns a structured GraphContext object.                   │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-└────────┬─────────────────────────────────────────────────────────────────┘
-         │ 4. GraphContext
-         ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  AIAgentService  (Services/)                       UPDATED               │
-│                                                                          │
-│  ProcessEmailAsync(email, graphContext)                                  │
-│                                                                          │
-│  5. Builds enriched prompt:                                              │
-│     [Graph context block]  ← structured relational context              │
-│     [Email content]        ← original email                             │
-│                                                                          │
-│  6. Sends to Azure AI Foundry agent                                      │
-│     → AzureAISearchTool (Blob + SharePoint docs)  ← vector retrieval    │
-│     → SharePointGroundingTool (optional)                                 │
-│                                                                          │
-│  Returns reply string.                                                   │
-└────────┬─────────────────────────────────────────────────────────────────┘
-         │ reply text
-         │
-         │  (back to EmailMonitorWorker → steps 7 & 8 above)
-         │
-         ▼
-┌─────────────────────────┐       ┌─────────────────────────┐
-│  Azure AI Search        │       │  Cosmos DB (Gremlin)    │
-│  • Blob Storage index   │       │  • Sender vertices      │
-│  • SharePoint index     │       │  • Topic vertices       │
-│                         │       │  • Issue vertices       │
-│  (vector / full-text)   │       │  • Organization vertices│
-│                         │       │  • Resolution vertices  │
-│                         │       │  • SUBMITTED edges      │
-│                         │       │  • BELONGS_TO edges     │
-│                         │       │  • RESOLVED_BY edges    │
-│                         │       │  • RELATED_TO edges     │
-└─────────────────────────┘       └─────────────────────────┘
+```mermaid
+flowchart TD
+    Worker["EmailMonitorWorker\n(BackgroundService)"]
+    GraphEmail["GraphEmailService\n(Microsoft Graph API v1)"]
+    GraphRag["GraphRagService"]
+    AIAgent["AIAgentService\n(Azure AI Foundry)"]
+    AISearch["Azure AI Search\n(Blob + SharePoint)"]
+    CosmosDB[("Azure Cosmos DB\n(Gremlin Graph)")]
+    Outlook["Outlook Mailbox"]
+
+    Worker -- "1 · fetch unread emails" --> GraphEmail
+    GraphEmail -- "EmailItem[]" --> Worker
+    Worker -- "2 · extract entities" --> GraphRag
+    GraphRag -- "3 · upsert graph" --> CosmosDB
+    GraphRag -- "4 · get context" --> CosmosDB
+    GraphRag -- "GraphContext" --> Worker
+    Worker -- "5 · generate reply\n(enriched prompt)" --> AIAgent
+    AIAgent -- "knowledge retrieval" --> AISearch
+    AIAgent -- "reply text" --> Worker
+    Worker -- "6 · send reply" --> GraphEmail
+    GraphEmail --> Outlook
+    Worker -- "7 · record resolution" --> GraphRag
+    GraphRag --> CosmosDB
+    Worker -- "8 · move to folder" --> GraphEmail
 ```
 
 ---
@@ -366,55 +299,52 @@ Bidirectional edge linking issues with similar topics or subjects.
 
 ### 4.3 Entity-Relationship Diagram
 
-```
-                          ┌──────────────────┐
-                          │  Organization    │
-                          │  ─────────────── │
-                          │  id (domain)     │
-                          │  name            │
-                          │  tier            │
-                          └────────┬─────────┘
-                                   │ BELONGS_TO (Sender→Org)
-                                   │
-                    ┌──────────────▼──────────┐
-                    │         Sender          │
-                    │  ─────────────────────  │
-                    │  id (smtp address)      │
-                    │  displayName            │
-                    │  emailCount             │
-                    └──────────┬──────────────┘
-                               │ SUBMITTED (Sender→Issue)
-                               │
-              ┌────────────────▼──────────────────┐
-              │             Issue                 │
-              │  ─────────────────────────────── │
-              │  id (message-id)                  │
-              │  subject                          │
-              │  summary                          │
-              │  status                           │
-              └──────┬────────────────────┬───────┘
-                     │ HAS_TOPIC          │ RESOLVED_BY
-                     │ (Issue→Topic)      │ (Issue→Resolution)
-                     ▼                   ▼
-              ┌────────────┐    ┌──────────────────────┐
-              │   Topic    │    │      Resolution      │
-              │  ───────── │    │  ────────────────── │
-              │  id        │    │  id (hash)           │
-              │  label     │    │  summary             │
-              │  frequency │    │  replySnippet        │
-              └────────────┘    └──────────┬───────────┘
-                                           │ CITES
-                                           │ (Resolution→Article)
-                                           ▼
-                                ┌──────────────────────┐
-                                │   KnowledgeArticle   │
-                                │  ────────────────── │
-                                │  id (search key)     │
-                                │  title               │
-                                │  url                 │
-                                └──────────────────────┘
+```mermaid
+erDiagram
+    Sender {
+        string id "SMTP address"
+        string displayName
+        datetime firstSeenUtc
+        datetime lastSeenUtc
+        int emailCount
+    }
+    Organization {
+        string id "email domain"
+        string name
+        string tier
+        string accountManager
+    }
+    Topic {
+        string id "normalized label"
+        string displayName
+        int frequency
+    }
+    Issue {
+        string id "message ID"
+        string subject
+        string summary
+        string status
+        datetime createdUtc
+        datetime resolvedUtc
+    }
+    Resolution {
+        string id "SHA-256 hash"
+        string summary
+        string replySnippet
+        datetime createdUtc
+    }
+    KnowledgeArticle {
+        string id "search key"
+        string title
+        string url
+    }
 
-Issue ─── RELATED_TO ──► Issue   (bidirectional)
+    Sender ||--o{ Organization : "BELONGS_TO"
+    Sender ||--o{ Issue : "SUBMITTED"
+    Issue ||--o{ Topic : "HAS_TOPIC"
+    Issue ||--o| Resolution : "RESOLVED_BY"
+    Issue ||--o{ Issue : "RELATED_TO"
+    Resolution ||--o{ KnowledgeArticle : "CITES"
 ```
 
 ---
@@ -604,76 +534,42 @@ The worker calls `GraphRagService` before and after the AI agent:
 
 ## 6. Data Flow – Step by Step
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 1 – Poll Inbox                                                      │
-│                                                                          │
-│  EmailMonitorWorker calls GraphEmailService.GetUnreadEmailsAsync()       │
-│  Returns: List<EmailItem>                                                │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ EmailItem[]
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 2 – Extract Entities (GraphRagService)                              │
-│                                                                          │
-│  Calls AI model with structured extraction prompt.                       │
-│  Returns: ExtractedEntities { Topics, OrgName, IssueSummary, ... }       │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ ExtractedEntities
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 3 – Upsert Graph (GraphRagService)                                  │
-│                                                                          │
-│  Creates or updates vertices in Cosmos DB Gremlin:                       │
-│    • Sender vertex (upsert on smtp address)                              │
-│    • Organization vertex (upsert on domain)                              │
-│    • Issue vertex (upsert on message-id)                                 │
-│    • Topic vertices (upsert on normalized label)                         │
-│  Creates edges: SUBMITTED, BELONGS_TO, HAS_TOPIC                        │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 4 – Retrieve Graph Context (GraphRagService)                        │
-│                                                                          │
-│  Traverses from Sender → SUBMITTED → Issue → RESOLVED_BY → Resolution   │
-│  Traverses from Sender → BELONGS_TO → Organization                      │
-│  Returns: GraphContext { OrgName, Tier, PriorIssues, KnownTopics }       │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ GraphContext
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 5 – Generate Reply (AIAgentService)                                 │
-│                                                                          │
-│  Builds prompt = [GraphContext block] + [Email content]                  │
-│  Sends to Azure AI Foundry agent via ProjectResponsesClient              │
-│  Agent uses AzureAISearchTool to retrieve document chunks                │
-│  Returns: reply string                                                   │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ reply string
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 6 – Send Reply (GraphEmailService)                                  │
-│                                                                          │
-│  GraphEmailService.SendReplyAsync(messageId, replyBody)                  │
-│  Sends reply via Microsoft Graph API                                     │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ success
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 7 – Record Resolution (GraphRagService)                             │
-│                                                                          │
-│  Creates Resolution vertex with reply snippet                            │
-│  Creates RESOLVED_BY edge from Issue → Resolution                        │
-│  Updates Issue.status = "resolved"                                       │
-└────────────────────────────────┬─────────────────────────────────────────┘
-                                 │
-                                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Step 8 – Move Email (GraphEmailService)                                  │
-│                                                                          │
-│  GraphEmailService.MoveToFolderAsync(messageId, "Processed")             │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant W as EmailMonitorWorker
+    participant GE as GraphEmailService
+    participant GR as GraphRagService
+    participant DB as Cosmos DB (Gremlin)
+    participant AI as AIAgentService
+    participant AS as Azure AI Search
+
+    W->>GE: 1. GetUnreadEmailsAsync()
+    GE-->>W: List of EmailItem
+
+    W->>GR: 2. ExtractEntitiesAsync(email)
+    GR->>AI: AI model call (extraction prompt)
+    AI-->>GR: ExtractedEntities JSON
+
+    W->>GR: 3. UpsertGraphAsync(email, entities)
+    GR->>DB: Upsert Sender, Org, Issue, Topic vertices + edges
+
+    W->>GR: 4. GetGraphContextAsync(senderAddress)
+    GR->>DB: Traverse Sender → Issues → Resolutions
+    DB-->>GR: Graph traversal results
+    GR-->>W: GraphContext
+
+    W->>AI: 5. ProcessEmailAsync(email + graphContext)
+    AI->>AS: Knowledge retrieval (Blob + SharePoint)
+    AS-->>AI: Document chunks
+    AI-->>W: Reply text
+
+    W->>GE: 6. SendReplyAsync(messageId, reply)
+    GE-->>W: Success
+
+    W->>GR: 7. RecordResolutionAsync(messageId, reply)
+    GR->>DB: Create Resolution vertex + RESOLVED_BY edge
+
+    W->>GE: 8. MoveToFolderAsync(messageId, "Processed")
 ```
 
 ---

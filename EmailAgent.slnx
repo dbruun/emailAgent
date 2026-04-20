@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/EmailAgent/EmailAgent.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EmailAgent.Tests/EmailAgent.Tests.csproj" />
+  </Folder>
 </Solution>

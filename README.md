@@ -4,35 +4,27 @@ A .NET 10 Worker Service that monitors an Outlook inbox, uses **Azure AI Foundry
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    Worker["EmailMonitorWorker\n(BackgroundService)"]
+    GraphEmail["GraphEmailService\n(Microsoft Graph API v1)"]
+    AIAgent["AIAgentService\n(Azure AI Foundry)"]
+    AISearch["Azure AI Search\n(Blob Storage + SharePoint)"]
+    Outlook["Outlook Mailbox"]
+
+    Worker -- "1 · poll inbox" --> GraphEmail
+    GraphEmail -- "unread emails" --> Worker
+    Worker -- "2 · generate reply" --> AIAgent
+    AIAgent -- "knowledge retrieval" --> AISearch
+    AIAgent -- "reply text" --> Worker
+    Worker -- "3 · send reply" --> GraphEmail
+    GraphEmail --> Outlook
+    Worker -- "4 · move to folder" --> GraphEmail
 ```
-┌───────────────────────────┐        poll every N seconds
-│  EmailMonitorWorker       │◄────── (BackgroundService)
-│  (Workers/)               │
-└───────┬───────────────────┘
-        │  unread emails
-        ▼
-┌───────────────────────────┐        Microsoft Graph API v1
-│  GraphEmailService        │◄────── (app-only auth, ClientSecretCredential)
-│  (Services/)              │        • GetUnreadEmailsAsync
-│                           │        • SendReplyAsync
-│                           │        • MoveToFolderAsync
-└───────────────────────────┘
-        │  email content
-        ▼
-┌───────────────────────────┐        Azure AI Foundry (AIProjectClient)
-│  AIAgentService           │◄────── • Registers a DeclarativeAgentDefinition
-│  (Services/)              │          with AzureAISearchTool +
-│                           │          SharepointPreviewTool
-│                           │        • Executes via ProjectResponsesClient
-└───────────────────────────┘
-        │  knowledge retrieval
-        ▼
-┌───────────────────────────┐
-│  Azure AI Search          │  indexes documents from:
-│                           │  • Azure Blob Storage
-│                           │  • SharePoint (via indexer)
-└───────────────────────────┘
-```
+
+> **Advanced option:** The codebase also includes a **GraphRAG** pipeline backed by Azure Cosmos DB for Apache Gremlin.
+> This feature is **disabled by default** (`GraphRag:Enabled = false`) and requires additional infrastructure.
+> See [Graph RAG with Cosmos DB Gremlin](docs/graph-rag-cosmos-gremlin.md) for details on enabling it.
 
 ## Prerequisites
 
@@ -43,6 +35,7 @@ A .NET 10 Worker Service that monitors an Outlook inbox, uses **Azure AI Foundry
 | Azure AD App Registration | Needs **Mail.ReadWrite** + **Mail.Send** Graph API permissions (application permissions, not delegated) |
 | Azure AI Foundry project | With a model deployment (e.g. `gpt-4o`) |
 | Azure AI Search resource | Connected to the Foundry project; index must cover Blob/SharePoint content |
+| Azure Cosmos DB for Apache Gremlin | With a database and graph container for GraphRAG (optional – can be disabled) |
 | Outlook mailbox | A folder named **Processed** (or whatever you configure) must already exist |
 
 ## Configuration
@@ -97,7 +90,9 @@ The application uses **app-only** auth (`ClientSecretCredential`). Grant the app
 }
 ```
 
-### GraphRAG (`GraphRag`)
+### GraphRAG (`GraphRag`) – advanced, disabled by default
+
+GraphRAG enriches AI replies with customer relationship context from a knowledge graph.  It is **disabled by default** in this sample.  To enable it, set `Enabled` to `true` and provide the Cosmos DB Gremlin connection details.  See [Graph RAG with Cosmos DB Gremlin](docs/graph-rag-cosmos-gremlin.md) for the full guide.
 
 ```json
 "GraphRag": {
@@ -107,7 +102,7 @@ The application uses **app-only** auth (`ClientSecretCredential`). Grant the app
   "AccountKey": "",
   "PartitionKey": "email-agent",
   "MaxRelatedIssues": 3,
-  "Enabled": true
+  "Enabled": false
 }
 ```
 
@@ -157,25 +152,37 @@ src/EmailAgent/
 ├── Configuration/
 │   ├── AIFoundrySettings.cs          # Azure AI Foundry settings
 │   ├── EmailProcessingSettings.cs    # Polling interval & folder name
+│   ├── GraphRagSettings.cs           # Cosmos DB Gremlin / GraphRAG settings
 │   └── GraphSettings.cs              # Microsoft Graph / Entra ID settings
 ├── Models/
-│   └── EmailItem.cs                  # Immutable email snapshot
+│   ├── EmailItem.cs                  # Immutable email snapshot
+│   └── GraphContext.cs               # Graph context & prior-issue records
 ├── Services/
 │   ├── IAIAgentService.cs            # AI agent abstraction
 │   ├── AIAgentService.cs             # Azure AI Foundry implementation
 │   ├── IGraphEmailService.cs         # Graph email abstraction
-│   └── GraphEmailService.cs         # Microsoft Graph SDK v5 implementation
+│   ├── GraphEmailService.cs          # Microsoft Graph SDK v5 implementation
+│   ├── IGraphRagService.cs           # GraphRAG abstraction + ExtractedEntities
+│   └── GraphRagService.cs            # Cosmos DB Gremlin implementation
 ├── Workers/
 │   └── EmailMonitorWorker.cs         # BackgroundService – orchestrates poll loop
 ├── Program.cs                        # DI registration & host setup
 └── appsettings.json                  # Configuration template
+
+tests/EmailAgent.Tests/
+├── ModelAndConfigTests.cs            # Record & settings default tests
+├── Services/
+│   ├── AIAgentServiceTests.cs        # BuildGraphContextBlock tests
+│   └── GraphRagServiceTests.cs       # Disabled paths, helpers, fallback extraction
+└── Workers/
+    └── EmailMonitorWorkerTests.cs    # Full worker loop tests with mocks
 ```
 
 ## Further Reading
 
 | Document | Description |
 |---|---|
-| [Graph RAG with Cosmos DB Gremlin](docs/graph-rag-cosmos-gremlin.md) | Full architecture, data model, implementation guide, and infrastructure setup for adding GraphRAG via Azure Cosmos DB for Apache Gremlin |
+| [Graph RAG with Cosmos DB Gremlin](docs/graph-rag-cosmos-gremlin.md) | Advanced optional feature – architecture, data model, and infrastructure setup for enabling GraphRAG via Azure Cosmos DB for Apache Gremlin |
 
 ## Key packages
 
